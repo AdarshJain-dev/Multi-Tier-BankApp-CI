@@ -1,0 +1,110 @@
+pipeline {
+    agent any
+    tools {
+        maven 'maven3'
+    }
+    environment {
+        SCANNER_HOME = tool 'sonar-scanner'
+        IMAGE_TAG = "v${BUILD_NUMBER}"
+    }
+    stages {
+        stage('Git Checkout') {
+            steps {
+                git branch: 'main', url: 'https://github.com/AdarshJain-dev/Multi-Tier-BankApp-CI.git'
+            }
+        }
+        stage('Compile') {
+            steps {
+                sh 'mvn compile -DskipTests'
+            }
+        }
+        stage('Test') {
+            steps {
+                sh 'mvn test -DskipTests'
+            }
+        }
+        stage('Trivy FS scan') {
+            steps {
+                sh 'trivy fs --format table -o fs-report.html .'
+            }
+        }
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('sonar') {
+                    sh ''' $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=GCBank \
+                            -Dsonar.projectKey=GCBank \
+                            -Dsonar.java.binaries=target
+                        '''
+                }
+            }
+        }
+        stage('Quality Gate Check') {
+            steps {
+                timeout(time: 1, unit: 'HOURS') {
+                     waitForQualityGate abortPipeline: false, credentialsId: 'sonar-token'
+                 }
+            }
+        }
+        stage('Build') {
+            steps {
+                sh 'mvn package -DskipTests'
+            }
+        }
+        stage('Publish Artifacts') {
+            steps {
+                withMaven(globalMavenSettingsConfig: 'devopsshack', maven: 'maven3', traceability: true) {
+                    sh 'mvn clean deploy -DskipTests'
+                }
+            }
+        }
+        stage('Build & tag docker image') {
+            steps {
+                script {
+                    withDockerRegistry(credentialsId: 'docker-cred') {
+                        sh 'docker build -t adarshjain428/bankapp:$IMAGE_TAG .'
+                    }
+                }
+            }
+        }
+        stage('Trivy Image scan') {
+            steps {
+                sh 'trivy image --format table -o image-report.html adarshjain428/bankapp:$IMAGE_TAG'
+            }
+        }
+        stage('Push Docker images') {
+            steps {
+                script {
+                    withDockerRegistry(credentialsId: 'docker-cred') {
+                        sh 'docker push adarshjain428/bankapp:$IMAGE_TAG'
+                    }
+                }
+            }
+        }
+        stage('Update Manifest File in Mega-Project-CD') {
+            steps {
+                script {
+                    cleanWs ()
+                    
+                    withCredentials([usernamePassword(credentialsId: 'git', usernameVariable: 'GIT_USERNAME', passwordVariable: 'GIT_PASSWORD') ]) {
+                    sh ..
+                    git clone https://${GIT_USERNAME}:${GIT_PASSWORD]@github.com/jaiswaladi246/Mega-Project-CD.git
+                    
+                    # Update the image tag in the manifest.yaml file
+                    cd Mega-Project-CD
+                    sed -i "s|adijaiswal/bankapp :.* |adijaiswal/bankapp:${IMAGE_TAG}|" Manifest/manifest.yaml
+                    
+                    # Confirm changes
+                    echo "Updated manifest file contents:"
+                    cat Manifest/manifest.yaml
+                    
+                    # Commit and push the changes
+                    git config user.name "Jenkins"
+                    git config user.email "jenkins@example.com"
+                    git add Manifest/manifest.yaml
+                    git commit -m "Update image tag to ${IMAGE_TAG}"
+                    git push origin main
+                }
+            }
+        }
+    }
+}
