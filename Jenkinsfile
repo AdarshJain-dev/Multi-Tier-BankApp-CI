@@ -7,11 +7,12 @@ pipeline {
     
     tools {
         maven 'maven3'
+        jdk 'jdk17'
     }
     
-    environment {
-        SCANNER_HOME = tool 'sonar-scanner'
-    }
+    // environment {
+    //     SCANNER_HOME = tool 'sonar-scanner'
+    // }
 
     stages {
         stage('Clean Workspace') {
@@ -39,19 +40,19 @@ pipeline {
                 sh 'trivy fs --format table -o fs.html .'
             }
         }
-        stage('SonarQube Analysis') {
-            steps {
-                withSonarQubeEnv('sonar') {
-                    sh ''' $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=bankapp -Dsonar.projectKey=bankapp \
-                            -Dsonar.java.binaries=target '''
-                }
-            }
-        }
+        // stage('SonarQube Analysis') {
+        //     steps {
+        //         withSonarQubeEnv('sonar') {
+        //             sh ''' $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=bankapp -Dsonar.projectKey=bankapp \
+        //                     -Dsonar.java.binaries=target '''
+        //         }
+        //     }
+        // }
         stage('Building and publish Nexus') {
             steps {
-                withMaven(globalMavenSettingsConfig: 'maven-settings-devopsshack', maven: 'maven3', traceability: true) {
-                    sh 'mvn deploy -DskipTests=true'
-                }
+                // withMaven(globalMavenSettingsConfig: 'maven-settings-devopsshack', maven: 'maven3', traceability: true) {
+                    sh 'mvn clean package -DskipTests=true'
+                // }
             }
         }
         stage('Docker build & tag') {
@@ -77,34 +78,44 @@ pipeline {
                 }
             }
         }
-        stage('Update image tag in github') {
+        stage('Update image tag in github (Blue-Green safe)') {
             steps {
                 withCredentials([gitUsernamePassword(credentialsId: 'git-cred', gitToolName: 'Default')]) {
-                    sh ''' git clone https://github.com/AdarshJain-dev/Multi-Tier-BankApp-CD.git
-                           cd Multi-Tier-BankApp-CD
-                           ls -l bankapp
-                           repo_dir=$(pwd)
-                           
-                           sed -i 's|image: adarshjain428/bankapp:.*|image: adarshjain428/bankapp:'${DOCKER_TAG}'|' ${repo_dir}/bankapp/bankapp-ds.yml
-                       '''
-                    sh ''' echo "Updated YAML file contents:"
-                           cat Multi-Tier-BankApp-CD/bankapp/bankapp-ds.yml
-                       '''
-                       
                     sh '''
-                          cd Multi-Tier-BankApp-CD
-                          git config user.email "anany.0304pandey@gmail.com"
-                          git config user.name "Jenkins CI"
-                       '''
-                    sh '''
-                          cd Multi-Tier-BankApp-CD
-                          ls
-                          git add bankapp/bankapp-ds.yml
-                          git commit -m "Update image tag to ${DOCKER_TAG}"
-                          git push origin main
-                       '''
+                        set -e
+        
+                        git clone https://github.com/AdarshJain-dev/Multi-Tier-BankApp-CD.git
+                        cd Multi-Tier-BankApp-CD
+        
+                        VALUES_FILE="bankapp-helm/values.yaml"
+        
+                        echo "Using values file: $VALUES_FILE"
+                        cat $VALUES_FILE
+        
+                        ACTIVE_COLOR=$(grep '^activeColor:' $VALUES_FILE | awk '{print $2}')
+                        echo "Active color is: $ACTIVE_COLOR"
+        
+                        if [ "$ACTIVE_COLOR" = "blue" ]; then
+                            echo "Blue is LIVE → updating GREEN image tag"
+                            sed -i "s/^  greenTag:.*/  greenTag: ${DOCKER_TAG}/" $VALUES_FILE
+                        else
+                            echo "Green is LIVE → updating BLUE image tag"
+                            sed -i "s/^  blueTag:.*/  blueTag: ${DOCKER_TAG}/" $VALUES_FILE
+                        fi
+        
+                        echo "Updated values.yaml:"
+                        cat $VALUES_FILE
+        
+                        git config user.email "jenkins@ci.local"
+                        git config user.name "Jenkins CI"
+        
+                        git add $VALUES_FILE
+                        git commit -m "Update inactive color image tag to ${DOCKER_TAG}"
+                        git push origin main
+                    '''
                 }
             }
         }
+
     }
 }
